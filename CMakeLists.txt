@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.7)
-project(leopard)
+project(leopard_demo)
 
 include(CMakeDependentOption)
 include(CheckCXXCompilerFlag)
@@ -18,11 +18,10 @@ set(LIB_SOURCE_FILES
         LeopardFF8.cpp
         LeopardFF8.h)
 
-set(BENCH_SOURCE_FILES
-        tests/benchmark.cpp)
+set(CODED_FILE_DEMO_SOURCE_FILES
+        examples/coded_file_demo.cpp)
 
-set(EXPERIMENT_SOURCE_FILES
-        tests/experiments.cpp)
+option(BUILD_LEOPARD_TESTS "Build Leopard benchmark and experiment programs" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -81,6 +80,7 @@ else()
     check_cxx_compiler_flag("-O3" CXX_FLAG_O3)
     check_cxx_compiler_flag("-Wall" CXX_FLAG_Wall)
     check_cxx_compiler_flag("-Wextra" CXX_FLAG_Wextra)
+    check_cxx_compiler_flag("-Wno-array-bounds" CXX_FLAG_Wno_array_bounds)
 
     if(CXX_FLAG_g)
         set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
@@ -101,6 +101,10 @@ else()
     if(CXX_FLAG_Wextra)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra")
     endif(CXX_FLAG_Wextra)
+
+    if(CXX_FLAG_Wno_array_bounds)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-array-bounds")
+    endif(CXX_FLAG_Wno_array_bounds)
 endif()
 
 find_package(OpenMP)
@@ -115,7 +119,12 @@ endif(ENABLE_OPENMP)
 
 add_library(libleopard STATIC ${LIB_SOURCE_FILES})
 
-add_executable(bench_leopard ${BENCH_SOURCE_FILES})
-target_link_libraries(bench_leopard libleopard)
+add_executable(coded_file_demo ${CODED_FILE_DEMO_SOURCE_FILES})
+target_link_libraries(coded_file_demo libleopard)
 
-add_executable(experiment_leopard ${EXPERIMENT_SOURCE_FILES})
+if(BUILD_LEOPARD_TESTS)
+    add_executable(bench_leopard tests/benchmark.cpp)
+    target_link_libraries(bench_leopard libleopard)
+
+    add_executable(experiment_leopard tests/experiments.cpp)
+endif()
