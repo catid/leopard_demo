@@ -18,30 +18,30 @@ cmake --build build --target coded_file_demo --parallel
 
 ## Example
 
-This uses this `README.md` as the input file, erases data block `0`, recovers it
-from parity, and verifies the recovered file.
+This uses the included `examples/demo_video.mp4` file as input, erases data
+block `0`, recovers it from parity, and verifies the recovered file.
 
 ```sh
 mkdir -p build/file-demo
 
-./build/coded_file_demo encode README.md build/file-demo/readme.leo 1 1048576
-./build/coded_file_demo decode build/file-demo/readme.leo build/file-demo/README.recovered.md --erase-data 0
-cmp README.md build/file-demo/README.recovered.md
+./build/coded_file_demo encode examples/demo_video.mp4 build/file-demo/demo_video.leo 2 1048576
+./build/coded_file_demo decode build/file-demo/demo_video.leo build/file-demo/demo_video.recovered.mp4 --erase-data 0
+cmp examples/demo_video.mp4 build/file-demo/demo_video.recovered.mp4
 ./build/coded_file_demo fuzz 10000 8 4 4096 12345
 ```
 
 Output:
 
 ```text
-Encoded k=1 data blocks and p=1 parity blocks
+Encoded k=2 data blocks and p=2 parity blocks
 Block size: 1048576 bytes
-Wrote coded file: build/file-demo/readme.leo
-Decoded build/file-demo/README.recovered.md
+Wrote coded file: build/file-demo/demo_video.leo
+Decoded build/file-demo/demo_video.recovered.mp4
 Erased data blocks: 0
 Erased parity blocks: none
 Fuzz trials: 10000
 Parameters: k=8 p=4 block_bytes=4096 seed=12345
-Elapsed: 125 ms
+Elapsed: <varies> ms
 Result: PASS
 ```
 
