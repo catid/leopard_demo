@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -285,6 +286,24 @@ bool CheckIndexRange(const std::set<unsigned>& indexes, unsigned count, const ch
     return true;
 }
 
+double MegabytesPerSecond(uint64_t bytes, const std::chrono::steady_clock::duration& elapsed)
+{
+    const double seconds = std::chrono::duration<double>(elapsed).count();
+    if (bytes == 0 || seconds <= 0.)
+        return 0.;
+    return static_cast<double>(bytes) / (1000. * 1000.) / seconds;
+}
+
+void PrintThroughput(const char* label, uint64_t bytes,
+                     const std::chrono::steady_clock::time_point& start,
+                     const std::chrono::steady_clock::time_point& stop)
+{
+    std::cout << label << ": "
+              << std::fixed << std::setprecision(2)
+              << MegabytesPerSecond(bytes, stop - start)
+              << " MB/s\n";
+}
+
 void FillRandomBlock(uint8_t* block, uint64_t block_bytes, std::mt19937_64* rng)
 {
     uint64_t offset = 0;
@@ -310,6 +329,32 @@ std::vector<unsigned> ShuffledIndexes(unsigned count, std::mt19937_64* rng)
     }
 
     return indexes;
+}
+
+std::string FormatLossPattern(
+    unsigned trial,
+    const std::vector<unsigned>& original_losses,
+    unsigned original_loss_count,
+    const std::vector<unsigned>& recovery_losses,
+    unsigned recovery_loss_count)
+{
+    std::ostringstream out;
+    out << "  trial " << trial << ": data=[";
+    for (unsigned i = 0; i < original_loss_count; ++i)
+    {
+        if (i != 0)
+            out << ",";
+        out << original_losses[i];
+    }
+    out << "] parity=[";
+    for (unsigned i = 0; i < recovery_loss_count; ++i)
+    {
+        if (i != 0)
+            out << ",";
+        out << recovery_losses[i];
+    }
+    out << "]";
+    return out.str();
 }
 
 bool WriteDecodedOutput(const std::string& output_path,
@@ -390,6 +435,8 @@ int EncodeFile(const std::string& input_path, const std::string& coded_path,
         std::cerr << "k + parity-blocks must be <= 65536 for Leopard\n";
         return 1;
     }
+
+    const std::chrono::steady_clock::time_point encode_start = std::chrono::steady_clock::now();
 
     std::vector<uint8_t*> original_data(original_count, nullptr);
     for (unsigned i = 0; i < original_count; ++i)
@@ -498,11 +545,13 @@ int EncodeFile(const std::string& input_path, const std::string& coded_path,
             return 1;
         }
     }
+    const std::chrono::steady_clock::time_point encode_stop = std::chrono::steady_clock::now();
 
     std::cout << "Encoded k=" << original_count
               << " data blocks and p=" << recovery_count << " parity blocks\n";
     std::cout << "Block size: " << block_bytes << " bytes\n";
     std::cout << "Wrote coded file: " << coded_path << "\n";
+    PrintThroughput("File encode throughput", original_bytes, encode_start, encode_stop);
 
     FreeBlocks(&original_data);
     FreeBlocks(&work_data);
@@ -534,6 +583,8 @@ int DecodeFile(const std::string& coded_path, const std::string& output_path,
                   << erased_data.size() << " erased data blocks\n";
         return 1;
     }
+
+    const std::chrono::steady_clock::time_point decode_start = std::chrono::steady_clock::now();
 
     std::vector<uint8_t*> original_data(header.original_count, nullptr);
     std::vector<uint8_t*> recovery_data(header.recovery_count, nullptr);
@@ -644,6 +695,7 @@ int DecodeFile(const std::string& coded_path, const std::string& output_path,
         FreeBlocks(&work_data);
         return 1;
     }
+    const std::chrono::steady_clock::time_point decode_stop = std::chrono::steady_clock::now();
 
     std::cout << "Decoded " << output_path << "\n";
     std::cout << "Erased data blocks:";
@@ -659,6 +711,7 @@ int DecodeFile(const std::string& coded_path, const std::string& output_path,
     for (std::set<unsigned>::const_iterator it = erased_parity.begin(); it != erased_parity.end(); ++it)
         std::cout << " " << *it;
     std::cout << "\n";
+    PrintThroughput("File decode throughput", header.original_bytes, decode_start, decode_stop);
 
     FreeBlocks(&original_data);
     FreeBlocks(&recovery_data);
@@ -809,6 +862,7 @@ int MainFuzz(int argc, char** argv)
     }
 
     std::mt19937_64 rng(seed);
+    std::vector<std::string> example_loss_patterns;
     const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 
     for (unsigned trial = 0; trial < trials; ++trial)
@@ -850,6 +904,16 @@ int MainFuzz(int argc, char** argv)
 
         std::vector<unsigned> original_losses = ShuffledIndexes(original_count, &rng);
         std::vector<unsigned> recovery_losses = ShuffledIndexes(recovery_count, &rng);
+
+        if (example_loss_patterns.size() < 10)
+        {
+            example_loss_patterns.push_back(FormatLossPattern(
+                trial,
+                original_losses,
+                original_loss_count,
+                recovery_losses,
+                recovery_loss_count));
+        }
 
         std::vector<const void*> available_originals = original_ptrs;
         std::vector<const void*> available_recovery(recovery_count, nullptr);
@@ -904,6 +968,9 @@ int MainFuzz(int argc, char** argv)
               << " p=" << recovery_count
               << " block_bytes=" << block_bytes
               << " seed=" << seed << "\n";
+    std::cout << "Example loss patterns:\n";
+    for (size_t i = 0; i < example_loss_patterns.size(); ++i)
+        std::cout << example_loss_patterns[i] << "\n";
     std::cout << "Elapsed: " << elapsed_ms << " ms\n";
     std::cout << "Result: PASS\n";
 

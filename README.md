@@ -36,11 +36,24 @@ Output:
 Encoded k=2 data blocks and p=2 parity blocks
 Block size: 1048576 bytes
 Wrote coded file: build/file-demo/demo_video.leo
+File encode throughput: <varies> MB/s
 Decoded build/file-demo/demo_video.recovered.mp4
 Erased data blocks: 0
 Erased parity blocks: none
+File decode throughput: <varies> MB/s
 Fuzz trials: 10000
 Parameters: k=8 p=4 block_bytes=4096 seed=12345
+Example loss patterns:
+  trial 0: data=[4,1] parity=[1,2]
+  trial 1: data=[5] parity=[1,0,2]
+  trial 2: data=[2] parity=[1,0]
+  trial 3: data=[6,1,3] parity=[2]
+  trial 4: data=[0] parity=[1]
+  trial 5: data=[4,2] parity=[0,2]
+  trial 6: data=[1,5,3,7] parity=[]
+  trial 7: data=[4,3,6] parity=[1]
+  trial 8: data=[6] parity=[2,3]
+  trial 9: data=[4,3,2,1] parity=[]
 Elapsed: <varies> ms
 Result: PASS
 ```
