@@ -22,4 +22,6 @@ mkdir -p build/file-demo
 
 cmp README.md build/file-demo/README.recovered.md
 
+./build/coded_file_demo fuzz 10000 8 4 4096 12345
+
 echo "Demo OK: build/file-demo/README.recovered.md matches README.md"

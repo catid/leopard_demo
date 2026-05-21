@@ -27,6 +27,7 @@ mkdir -p build/file-demo
 ./build/coded_file_demo encode README.md build/file-demo/readme.leo 1 1048576
 ./build/coded_file_demo decode build/file-demo/readme.leo build/file-demo/README.recovered.md --erase-data 0
 cmp README.md build/file-demo/README.recovered.md
+./build/coded_file_demo fuzz 10000 8 4 4096 12345
 ```
 
 Output:
@@ -38,6 +39,10 @@ Wrote coded file: build/file-demo/readme.leo
 Decoded build/file-demo/README.recovered.md
 Erased data blocks: 0
 Erased parity blocks: none
+Fuzz trials: 10000
+Parameters: k=8 p=4 block_bytes=4096 seed=12345
+Elapsed: 125 ms
+Result: PASS
 ```
 
 Or run:
@@ -53,3 +58,4 @@ Or run:
 - `p <= k` is required by this implementation; `p == k` is allowed.
 - `k + p <= 65536`.
 - Leopard is an erasure code; the caller must know which blocks are missing.
+- The fuzz test requires explicit parameters.

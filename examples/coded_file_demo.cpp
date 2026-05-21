@@ -16,12 +16,14 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -33,7 +35,6 @@
 
 namespace {
 
-const uint64_t kDefaultBlockBytes = 1024 * 1024;
 const size_t kAlignmentBytes = 32;
 
 struct Header
@@ -53,11 +54,12 @@ void PrintUsage(const char* program)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << program << " encode <input-file> <coded-file> <parity-blocks> [block-bytes]\n"
-        << "  " << program << " decode <coded-file> <output-file> [--erase-data 0,2] [--erase-parity 1]\n"
+        << "  " << program << " encode <input-file> <coded-file> <parity-blocks> <block-bytes>\n"
+        << "  " << program << " decode <coded-file> <output-file> --erase-data 0,2 [--erase-parity 1]\n"
+        << "  " << program << " fuzz <trials> <data-blocks> <parity-blocks> <block-bytes> <seed>\n"
         << "\n"
         << "Notes:\n"
-        << "  block-bytes defaults to 1048576 and must be a multiple of 64.\n"
+        << "  block-bytes must be a multiple of 64.\n"
         << "  parity-blocks must be between 1 and k, where k is the number of data blocks.\n";
 }
 
@@ -95,7 +97,9 @@ bool ParseIndexList(const std::string& text, std::set<unsigned>* indexes)
 {
     indexes->clear();
     if (text.empty())
-        return true;
+        return false;
+    if (text[0] == ',' || text[text.size() - 1] == ',' || text.find(",,") != std::string::npos)
+        return false;
 
     std::stringstream stream(text);
     std::string item;
@@ -104,7 +108,8 @@ bool ParseIndexList(const std::string& text, std::set<unsigned>* indexes)
         unsigned value = 0;
         if (!ParseUnsigned(item, &value))
             return false;
-        indexes->insert(value);
+        if (!indexes->insert(value).second)
+            return false;
     }
 
     return true;
@@ -149,6 +154,21 @@ void FreeBlocks(std::vector<uint8_t*>* blocks)
     for (size_t i = 0; i < blocks->size(); ++i)
         FreeBlock((*blocks)[i]);
     blocks->clear();
+}
+
+bool AllocateBlocks(unsigned count, uint64_t block_bytes, std::vector<uint8_t*>* blocks)
+{
+    blocks->assign(count, nullptr);
+    for (unsigned i = 0; i < count; ++i)
+    {
+        (*blocks)[i] = AllocateBlock(block_bytes);
+        if (!(*blocks)[i])
+        {
+            FreeBlocks(blocks);
+            return false;
+        }
+    }
+    return true;
 }
 
 bool FileSize(std::ifstream* file, uint64_t* bytes)
@@ -265,10 +285,36 @@ bool CheckIndexRange(const std::set<unsigned>& indexes, unsigned count, const ch
     return true;
 }
 
+void FillRandomBlock(uint8_t* block, uint64_t block_bytes, std::mt19937_64* rng)
+{
+    uint64_t offset = 0;
+    while (offset < block_bytes)
+    {
+        const uint64_t value = (*rng)();
+        const uint64_t chunk = std::min<uint64_t>(sizeof(value), block_bytes - offset);
+        std::memcpy(block + offset, &value, static_cast<size_t>(chunk));
+        offset += chunk;
+    }
+}
+
+std::vector<unsigned> ShuffledIndexes(unsigned count, std::mt19937_64* rng)
+{
+    std::vector<unsigned> indexes(count);
+    for (unsigned i = 0; i < count; ++i)
+        indexes[i] = i;
+
+    for (unsigned i = count; i > 1; --i)
+    {
+        const unsigned j = static_cast<unsigned>((*rng)() % i);
+        std::swap(indexes[i - 1], indexes[j]);
+    }
+
+    return indexes;
+}
+
 bool WriteDecodedOutput(const std::string& output_path,
                         const Header& header,
-                        const std::vector<uint8_t*>& original_data,
-                        const std::vector<uint8_t*>& work_data)
+                        const std::vector<const uint8_t*>& decoded_data)
 {
     std::ofstream output(output_path.c_str(), std::ios::binary);
     if (!output)
@@ -280,9 +326,7 @@ bool WriteDecodedOutput(const std::string& output_path,
     uint64_t remaining = header.original_bytes;
     for (unsigned i = 0; i < header.original_count; ++i)
     {
-        const uint8_t* block = original_data[i];
-        if (!block && i < work_data.size())
-            block = work_data[i];
+        const uint8_t* block = decoded_data[i];
         if (!block)
         {
             std::cerr << "Missing decoded data block " << i << "\n";
@@ -518,29 +562,6 @@ int DecodeFile(const std::string& coded_path, const std::string& output_path,
         }
     }
 
-    if (erased_data.empty())
-    {
-        if (!WriteDecodedOutput(output_path, header, original_data, std::vector<uint8_t*>()))
-        {
-            FreeBlocks(&original_data);
-            FreeBlocks(&recovery_data);
-            return 1;
-        }
-
-        std::cout << "Decoded " << output_path << "\n";
-        std::cout << "Erased data blocks: none\n";
-        std::cout << "Erased parity blocks:";
-        if (erased_parity.empty())
-            std::cout << " none";
-        for (std::set<unsigned>::const_iterator it = erased_parity.begin(); it != erased_parity.end(); ++it)
-            std::cout << " " << *it;
-        std::cout << "\n";
-
-        FreeBlocks(&original_data);
-        FreeBlocks(&recovery_data);
-        return 0;
-    }
-
     for (unsigned i = 0; i < header.recovery_count; ++i)
     {
         if (Contains(erased_parity, i))
@@ -612,7 +633,11 @@ int DecodeFile(const std::string& coded_path, const std::string& output_path,
         return 1;
     }
 
-    if (!WriteDecodedOutput(output_path, header, original_data, work_data))
+    std::vector<const uint8_t*> decoded_data(header.original_count, nullptr);
+    for (unsigned i = 0; i < header.original_count; ++i)
+        decoded_data[i] = original_data[i] ? original_data[i] : work_data[i];
+
+    if (!WriteDecodedOutput(output_path, header, decoded_data))
     {
         FreeBlocks(&original_data);
         FreeBlocks(&recovery_data);
@@ -643,7 +668,7 @@ int DecodeFile(const std::string& coded_path, const std::string& output_path,
 
 int MainEncode(int argc, char** argv)
 {
-    if (argc < 5 || argc > 6)
+    if (argc != 6)
     {
         PrintUsage(argv[0]);
         return 2;
@@ -656,8 +681,8 @@ int MainEncode(int argc, char** argv)
         return 2;
     }
 
-    uint64_t block_bytes = kDefaultBlockBytes;
-    if (argc == 6 && !ParseU64(argv[5], &block_bytes))
+    uint64_t block_bytes = 0;
+    if (!ParseU64(argv[5], &block_bytes))
     {
         std::cerr << "Invalid block-bytes value\n";
         return 2;
@@ -703,7 +728,189 @@ int MainDecode(int argc, char** argv)
         }
     }
 
+    if (erased_data.empty())
+    {
+        std::cerr << "At least one erased data block must be specified with --erase-data\n";
+        return 2;
+    }
+
     return DecodeFile(argv[2], argv[3], erased_data, erased_parity);
+}
+
+int MainFuzz(int argc, char** argv)
+{
+    if (argc != 7)
+    {
+        PrintUsage(argv[0]);
+        return 2;
+    }
+
+    unsigned trials = 0;
+    unsigned original_count = 0;
+    unsigned recovery_count = 0;
+    uint64_t block_bytes = 0;
+    uint64_t seed = 0;
+
+    if (!ParseUnsigned(argv[2], &trials) || trials == 0)
+    {
+        std::cerr << "Invalid trials value\n";
+        return 2;
+    }
+    if (!ParseUnsigned(argv[3], &original_count) || original_count == 0)
+    {
+        std::cerr << "Invalid data-blocks value\n";
+        return 2;
+    }
+    if (!ParseUnsigned(argv[4], &recovery_count))
+    {
+        std::cerr << "Invalid parity-blocks value\n";
+        return 2;
+    }
+    if (!ParseU64(argv[5], &block_bytes) || !BlockBytesAreSupported(block_bytes))
+    {
+        std::cerr << "Invalid block-bytes value\n";
+        return 2;
+    }
+    if (!ParseU64(argv[6], &seed))
+    {
+        std::cerr << "Invalid seed value\n";
+        return 2;
+    }
+    if (recovery_count == 0 || recovery_count > original_count)
+    {
+        std::cerr << "parity-blocks must be between 1 and k (" << original_count << ")\n";
+        return 2;
+    }
+    if (static_cast<uint64_t>(original_count) + recovery_count > 65536)
+    {
+        std::cerr << "k + parity-blocks must be <= 65536 for Leopard\n";
+        return 2;
+    }
+
+    if (!CheckInit())
+        return 1;
+
+    const unsigned encode_work_count = leo_encode_work_count(original_count, recovery_count);
+    const unsigned decode_work_count = leo_decode_work_count(original_count, recovery_count);
+
+    std::vector<uint8_t*> original_data;
+    std::vector<uint8_t*> encode_work_data;
+    std::vector<uint8_t*> decode_work_data;
+
+    if (!AllocateBlocks(original_count, block_bytes, &original_data) ||
+        !AllocateBlocks(encode_work_count, block_bytes, &encode_work_data) ||
+        !AllocateBlocks(decode_work_count, block_bytes, &decode_work_data))
+    {
+        std::cerr << "Failed to allocate fuzz buffers\n";
+        FreeBlocks(&original_data);
+        FreeBlocks(&encode_work_data);
+        FreeBlocks(&decode_work_data);
+        return 1;
+    }
+
+    std::mt19937_64 rng(seed);
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+    for (unsigned trial = 0; trial < trials; ++trial)
+    {
+        for (unsigned i = 0; i < original_count; ++i)
+            FillRandomBlock(original_data[i], block_bytes, &rng);
+        for (unsigned i = 0; i < encode_work_count; ++i)
+            std::memset(encode_work_data[i], 0, static_cast<size_t>(block_bytes));
+        for (unsigned i = 0; i < decode_work_count; ++i)
+            std::memset(decode_work_data[i], 0, static_cast<size_t>(block_bytes));
+
+        std::vector<const void*> original_ptrs(original_count, nullptr);
+        for (unsigned i = 0; i < original_count; ++i)
+            original_ptrs[i] = original_data[i];
+
+        LeopardResult result = leo_encode(
+            block_bytes,
+            original_count,
+            recovery_count,
+            encode_work_count,
+            &original_ptrs[0],
+            reinterpret_cast<void**>(&encode_work_data[0]));
+        if (result != Leopard_Success)
+        {
+            std::cerr << "leo_encode failed in trial " << trial << ": "
+                      << leo_result_string(result) << "\n";
+            FreeBlocks(&original_data);
+            FreeBlocks(&encode_work_data);
+            FreeBlocks(&decode_work_data);
+            return 1;
+        }
+
+        const unsigned original_loss_count =
+            1 + static_cast<unsigned>(rng() % recovery_count);
+        const unsigned max_recovery_loss_count = recovery_count - original_loss_count;
+        const unsigned recovery_loss_count = max_recovery_loss_count == 0
+            ? 0
+            : static_cast<unsigned>(rng() % (max_recovery_loss_count + 1));
+
+        std::vector<unsigned> original_losses = ShuffledIndexes(original_count, &rng);
+        std::vector<unsigned> recovery_losses = ShuffledIndexes(recovery_count, &rng);
+
+        std::vector<const void*> available_originals = original_ptrs;
+        std::vector<const void*> available_recovery(recovery_count, nullptr);
+        for (unsigned i = 0; i < recovery_count; ++i)
+            available_recovery[i] = encode_work_data[i];
+
+        for (unsigned i = 0; i < original_loss_count; ++i)
+            available_originals[original_losses[i]] = nullptr;
+        for (unsigned i = 0; i < recovery_loss_count; ++i)
+            available_recovery[recovery_losses[i]] = nullptr;
+
+        result = leo_decode(
+            block_bytes,
+            original_count,
+            recovery_count,
+            decode_work_count,
+            &available_originals[0],
+            &available_recovery[0],
+            reinterpret_cast<void**>(&decode_work_data[0]));
+        if (result != Leopard_Success)
+        {
+            std::cerr << "leo_decode failed in trial " << trial << ": "
+                      << leo_result_string(result) << "\n";
+            FreeBlocks(&original_data);
+            FreeBlocks(&encode_work_data);
+            FreeBlocks(&decode_work_data);
+            return 1;
+        }
+
+        for (unsigned i = 0; i < original_loss_count; ++i)
+        {
+            const unsigned index = original_losses[i];
+            if (std::memcmp(decode_work_data[index], original_data[index],
+                            static_cast<size_t>(block_bytes)) != 0)
+            {
+                std::cerr << "Recovered data mismatch in trial " << trial
+                          << " at data block " << index << "\n";
+                FreeBlocks(&original_data);
+                FreeBlocks(&encode_work_data);
+                FreeBlocks(&decode_work_data);
+                return 1;
+            }
+        }
+    }
+
+    const std::chrono::steady_clock::time_point stop = std::chrono::steady_clock::now();
+    const uint64_t elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count());
+
+    std::cout << "Fuzz trials: " << trials << "\n";
+    std::cout << "Parameters: k=" << original_count
+              << " p=" << recovery_count
+              << " block_bytes=" << block_bytes
+              << " seed=" << seed << "\n";
+    std::cout << "Elapsed: " << elapsed_ms << " ms\n";
+    std::cout << "Result: PASS\n";
+
+    FreeBlocks(&original_data);
+    FreeBlocks(&encode_work_data);
+    FreeBlocks(&decode_work_data);
+    return 0;
 }
 
 } // namespace
@@ -726,6 +933,8 @@ int main(int argc, char** argv)
         return MainEncode(argc, argv);
     if (mode == "decode")
         return MainDecode(argc, argv);
+    if (mode == "fuzz")
+        return MainFuzz(argc, argv);
 
     PrintUsage(argv[0]);
     return 2;

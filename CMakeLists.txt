@@ -23,10 +23,6 @@ set(CODED_FILE_DEMO_SOURCE_FILES
 
 option(BUILD_LEOPARD_TESTS "Build Leopard benchmark and experiment programs" OFF)
 
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
-endif()
-
 check_cxx_compiler_flag("-march=native" COMPILER_SUPPORTS_MARCH_NATIVE)
 if(COMPILER_SUPPORTS_MARCH_NATIVE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
