@@ -12,16 +12,21 @@ mkdir -p build/file-demo
 ./build/coded_file_demo encode \
     examples/demo_video.mp4 \
     build/file-demo/demo_video.leo \
-    2 \
-    1048576
+    4 \
+    1280
 
 ./build/coded_file_demo decode \
     build/file-demo/demo_video.leo \
     build/file-demo/demo_video.recovered.mp4 \
-    --erase-data 0
+    --erase-data 0,127,1226 \
+    --erase-parity 1
 
 cmp examples/demo_video.mp4 build/file-demo/demo_video.recovered.mp4
 
-./build/coded_file_demo fuzz 10000 8 4 4096 12345
+./build/coded_file_demo fuzz \
+    examples/demo_video.mp4 \
+    build/file-demo/demo_video.leo \
+    10000 \
+    12345
 
 echo "Demo OK: build/file-demo/demo_video.recovered.mp4 matches examples/demo_video.mp4"
